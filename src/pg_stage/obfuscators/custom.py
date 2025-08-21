@@ -821,7 +821,9 @@ class DataBlockProcessor:
 
                 output_stream.write(self.dio.write_int(len(processed_data)))
                 output_stream.write(processed_data)
+                output_stream.flush()
                 size = self.dio.read_int(input_stream)
+
             output_stream.write(self.dio.write_int(0))
             output_stream.flush()
 
