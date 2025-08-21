@@ -227,18 +227,28 @@ class StreamCombiner:
         if self.current_index >= len(self.streams):
             return b''
 
-        data = self.streams[self.current_index].read(size)
+        chunks = []
+        remaining = size
 
-        if size != -1 and len(data) < size and data != b'':
-            remaining = size - len(data)
-            self.current_index += 1
-            more_data = self.read(remaining)
-            data += more_data
-        elif not data:
-            self.current_index += 1
-            return self.read(size)
+        while self.current_index < len(self.streams) and (remaining > 0 or size == -1):
+            # читаем кусок
+            if size == -1:
+                chunk = self.streams[self.current_index].read()
+            else:
+                chunk = self.streams[self.current_index].read(remaining)
 
-        return data
+            if not chunk:  # текущий поток кончился
+                self.current_index += 1
+                continue
+
+            chunks.append(chunk)
+
+            if size != -1:
+                remaining -= len(chunk)
+                if remaining <= 0:
+                    break
+
+        return b''.join(chunks)
 
 
 class DumpIO:
@@ -821,7 +831,6 @@ class DataBlockProcessor:
             output_stream.write(processed_data)
             output_stream.flush()
 
-        output_stream.write(self.dio.write_int(0))
         output_stream.flush()
 
     def _write_data_block(self, output_stream: BinaryIO, dump_id: DumpId, data: bytes) -> None:
