@@ -813,12 +813,12 @@ class DataBlockProcessor:
                 message = f'Expected {size} bytes, got {len(data)}'
                 raise PgDumpError(message)
 
-            processed_data = self.processor.parse(data.decode('utf-8'))
-            if isinstance(processed_data, str):
-                processed_data = processed_data.encode('utf-8')
+            # processed_data = self.processor.parse(data.decode('utf-8'))
+            # if isinstance(processed_data, str):
+            #     processed_data = processed_data.encode('utf-8')
 
-            output_stream.write(self.dio.write_int(len(processed_data)))
-            output_stream.write(processed_data)
+            output_stream.write(self.dio.write_int(len(data)))
+            output_stream.write(data)
             output_stream.flush()
 
         output_stream.write(self.dio.write_int(0))
