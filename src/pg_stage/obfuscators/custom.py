@@ -916,7 +916,7 @@ class DumpProcessor:
         """
         dump_comments = {entry.defn for entry in dump.get_comment_entries() if entry.defn}
         for comment in dump_comments:
-            with suppress(Exception):
+            with suppress(ValueError):
                 self.data_parser.parse(comment)
 
         table_data_entries = list(dump.get_table_data_entries())
@@ -937,7 +937,7 @@ class DumpProcessor:
                     if dump_id in dump_ids:
                         copy_stmt = dump_copy_stmts.get(dump_id)
                         if copy_stmt:
-                            with suppress(Exception):
+                            with suppress(ValueError):
                                 self.data_parser.parse(copy_stmt)
 
                         try:
