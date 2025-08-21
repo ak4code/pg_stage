@@ -51,7 +51,7 @@ class Constants:
     MAGIC_HEADER = b'PGDMP'
     CUSTOM_FORMAT = 1
     ZLIB_CHUNK_SIZE = 4096
-    DEFAULT_BUFFER_SIZE = 4096
+    DEFAULT_BUFFER_SIZE = 16 * 1024
     MAX_CHUNK_SIZE = 50 * 1024 * 1024
     PROCESSING_BUFFER_SIZE = 64 * 1024
     COMPRESSION_BUFFER_SIZE = 32 * 1024
@@ -803,18 +803,27 @@ class DataBlockProcessor:
         if size > Constants.STREAM_WRITE_THRESHOLD:
             self._process_uncompressed_streaming(input_stream, output_stream, dump_id, size)
         else:
-            while size:
+            output_stream.write(BlockType.DATA)
+            output_stream.write(self.dio.write_int(dump_id))
+            while True:
+                if not size or size <= 0:
+                    break
+
                 data = input_stream.read(size)
+
                 if len(data) != size:
                     message = f'Expected {size} bytes, got {len(data)}'
                     raise PgDumpError(message)
 
-                processed_data = self.processor.parse(data)
+                processed_data = self.processor.parse(data.decode('utf-8'))
                 if isinstance(processed_data, str):
                     processed_data = processed_data.encode('utf-8')
 
-                self._write_data_block(output_stream, dump_id, processed_data)
+                output_stream.write(self.dio.write_int(len(processed_data)))
+                output_stream.write(processed_data)
                 size = self.dio.read_int(input_stream)
+            output_stream.write(self.dio.write_int(0))
+            output_stream.flush()
 
     def _process_uncompressed_streaming(
         self,
@@ -1016,7 +1025,7 @@ class DumpProcessor:
                             message = f'Error processing data block {dump_id}: {error}'
                             raise PgDumpError(message) from error
                     else:
-                        self._pass_through_block(input_stream, output_stream, block_type, dump_id)
+                        self._pass_through_block(input_stream, output_stream, block_type, dump_id, dump.header.compression_method,)
 
                 elif block_type == BlockType.END:
                     output_stream.write(block_type)
@@ -1034,6 +1043,7 @@ class DumpProcessor:
         output_stream: BinaryIO,
         block_type: bytes,
         dump_id: DumpId,
+        compression: CompressionMethod,
     ) -> None:
         """
         Передача блока без обработки с оптимизацией для больших блоков.
@@ -1046,18 +1056,34 @@ class DumpProcessor:
         output_stream.write(self.dio.write_int(dump_id))
 
         size = self.dio.read_int(input_stream)
-        output_stream.write(self.dio.write_int(size))
 
-        remaining = size
-        while remaining > 0:
-            chunk_size = min(remaining, Constants.DEFAULT_BUFFER_SIZE)
-            chunk = input_stream.read(chunk_size)
-            if not chunk:
-                message = f'Unexpected EOF while copying block data, {remaining} bytes remaining'
-                raise PgDumpError(message)
+        if compression == CompressionMethod.ZLIB:
+            output_stream.write(self.dio.write_int(size))
+            remaining = size
+            while remaining > 0:
+                chunk_size = min(remaining, Constants.DEFAULT_BUFFER_SIZE)
+                chunk = input_stream.read(chunk_size)
+                if not chunk:
+                    message = f'Unexpected EOF while copying block data, {remaining} bytes remaining'
+                    raise PgDumpError(message)
 
-            output_stream.write(chunk)
-            remaining -= len(chunk)
+                output_stream.write(chunk)
+                remaining -= len(chunk)
+        else:
+            while True:
+                if not size or size <= 0:
+                    break
+                output_stream.write(self.dio.write_int(size))
+                data = input_stream.read(size)
+
+                if len(data) != size:
+                    message = f'Expected {size} bytes, got {len(data)}'
+                    raise PgDumpError(message)
+
+                output_stream.write(data)
+                size = self.dio.read_int(input_stream)
+
+            output_stream.write(self.dio.write_int(0))
 
         output_stream.flush()
 
