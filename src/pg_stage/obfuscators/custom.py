@@ -803,16 +803,18 @@ class DataBlockProcessor:
         if size > Constants.STREAM_WRITE_THRESHOLD:
             self._process_uncompressed_streaming(input_stream, output_stream, dump_id, size)
         else:
-            data = input_stream.read(size)
-            if len(data) != size:
-                message = f'Expected {size} bytes, got {len(data)}'
-                raise PgDumpError(message)
+            while size:
+                data = input_stream.read(size)
+                if len(data) != size:
+                    message = f'Expected {size} bytes, got {len(data)}'
+                    raise PgDumpError(message)
 
-            processed_data = self.processor.parse(data)
-            if isinstance(processed_data, str):
-                processed_data = processed_data.encode('utf-8')
+                processed_data = self.processor.parse(data)
+                if isinstance(processed_data, str):
+                    processed_data = processed_data.encode('utf-8')
 
-            self._write_data_block(output_stream, dump_id, processed_data)
+                self._write_data_block(output_stream, dump_id, processed_data)
+                size = self.dio.read_int(input_stream)
 
     def _process_uncompressed_streaming(
         self,
