@@ -1,11 +1,7 @@
 import datetime
-import glob
 import io
-import os
 import struct
 import sys
-import tempfile
-import time
 import zlib
 from abc import ABCMeta, abstractmethod
 from contextlib import suppress
@@ -50,15 +46,10 @@ class Constants:
 
     MAGIC_HEADER = b'PGDMP'
     CUSTOM_FORMAT = 1
-    ZLIB_CHUNK_SIZE = 1024 * 1024  # 1MB - увеличен для уменьшения системных вызовов
     DEFAULT_BUFFER_SIZE = 2 * 1024 * 1024  # 2MB для чтения блоков
     MAX_CHUNK_SIZE = 50 * 1024 * 1024
-    PROCESSING_BUFFER_SIZE = 512 * 1024  # 512KB для обработки
-    COMPRESSION_BUFFER_SIZE = 2 * 1024 * 1024  # 2MB для компрессии
     COMPRESSION_LEVEL = 6
-    DEFAULT_TMP_DIR = os.getcwd()
-    TMP_FILE_PREFIX = 'pg_dump_'
-    LINE_BATCH_SIZE = 1000  # Количество строк для батчинга при записи
+    OUTPUT_CHUNK_SIZE = 512 * 1024  # 512KB - размер выходных сжатых чанков
 
 
 class PgDumpError(Exception):
@@ -169,111 +160,39 @@ class DataParser(metaclass=ABCMeta):
 
 
 class PgStageParser(DataParser):
-    """Процессор обфускации из библиотеки pg_stage с оптимизацией для больших данных."""
+    """Процессор обфускации с потоковой построчной обработкой."""
 
     def __init__(self, parser):
         """
-        Инициализация процессора обфускации.
-        :param parser: функция парсинга из обфускатора
+        :param parser: функция парсинга из обфускатора (PlainObfuscator._parse_line)
         """
         self.parser = parser
-        self._line_buffer = bytearray()
 
     def parse(self, data: Union[str, bytes]) -> Union[str, bytes]:
         """
-        Применить замены текста к данным (оптимизированная версия для потоковой обработки).
+        Применить обфускацию к данным.
         :param data: исходные данные (строка или байты)
         :return: обработанные данные
         """
         if not data:
             return data
-
         if isinstance(data, str):
             return self.parser(line=data)
+        return data
 
-        return self._parse_bytes_streaming(data)
-
-    def _parse_bytes_streaming(self, data: bytes) -> bytes:
+    def process_line(self, line: str) -> str:
         """
-        Потоковая обработка байтов построчно без загрузки всего в память.
-        Оптимизировано: использует bytearray для эффективной конкатенации.
-        :param data: байты для обработки
-        :return: обработанные байты
+        Обработать одну строку через парсер.
+        :param line: строка данных (без \\n)
+        :return: обработанная строка
         """
-        self._line_buffer.extend(data)
-        
-        last_newline = self._line_buffer.rfind(b'\n')
-        
-        if last_newline == -1:
-            return b''
-        
-        complete_data = bytes(self._line_buffer[:last_newline + 1])
-        del self._line_buffer[:last_newline + 1]
-        
-        processed_result = bytearray()
-        start = 0
-        
-        while True:
-            newline_pos = complete_data.find(b'\n', start)
-            if newline_pos == -1:
-                break
-            
-            line_bytes = complete_data[start:newline_pos]
-            start = newline_pos + 1
-            
-            if not line_bytes:
-                processed_result.extend(b'\n')
-                continue
-            
-            try:
-                line = line_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                processed_result.extend(line_bytes)
-                processed_result.extend(b'\n')
-                continue
-            
-            processed_line = self.parser(line=line)
-            
-            if isinstance(processed_line, str):
-                if processed_line != line:
-                    processed_result.extend(processed_line.encode('utf-8'))
-                    processed_result.extend(b'\n')
-                else:
-                    processed_result.extend(line_bytes)
-                    processed_result.extend(b'\n')
-            else:
-                processed_result.extend(line_bytes)
-                processed_result.extend(b'\n')
-        
-        return bytes(processed_result)
-    
-    def flush(self) -> bytes:
-        """
-        Обработать оставшиеся данные в буфере.
-        :return: обработанные данные
-        """
-        if not self._line_buffer:
-            return b''
-        
-        try:
-            line = bytes(self._line_buffer).decode('utf-8')
-            processed_line = self.parser(line=line)
-            if isinstance(processed_line, str) and processed_line != line:
-                result = processed_line.encode('utf-8')
-            else:
-                result = bytes(self._line_buffer)
-        except UnicodeDecodeError:
-            result = bytes(self._line_buffer)
-        
-        self._line_buffer.clear()
-        return result
+        return self.parser(line=line)
 
 
 class BufferedStreamReader:
     """
-    Читает данные из входного потока блоками (chunk), накапливает буфер
-    и позволяет копировать прочитанное в output_stream (bypass).
-    Оптимизирован для работы с большими потоками данных.
+    Читает данные из входного потока блоками, позволяет копировать прочитанное
+    в output_stream (bypass). Использует кольцевой буфер для O(1) чтения.
     """
 
     def __init__(self, input_stream: BinaryIO, output_stream: BinaryIO):
@@ -283,56 +202,70 @@ class BufferedStreamReader:
         """
         self._in_stream = input_stream
         self._out_stream = output_stream
-        self._buffer = bytearray()
+        self._chunks: list[bytes] = []
+        self._chunks_total = 0
+        self._chunk_offset = 0
         self._bypass = False
-        self._max_buffer_size = 2 * Constants.DEFAULT_BUFFER_SIZE
 
     def bypass_on(self) -> None:
-        """Включить дублирование данных в output_stream глобально."""
+        """Включить дублирование данных в output_stream."""
         self._bypass = True
 
     def bypass_off(self) -> None:
         """Выключить дублирование данных."""
         self._bypass = False
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int) -> bytes:
         """
-        Чтение данных из буфера.
-        Если данных в буфере недостаточно, дочитывает их из потока блоками.
-        Оптимизировано для предотвращения роста буфера до больших размеров.
-
-        :param size: количество байт (-1 для чтения всего доступного до EOF)
+        Чтение ровно size байт из потока. O(1) амортизированная сложность.
+        :param size: количество байт для чтения
         :return: прочитанные байты
         """
-        if size == 0:
+        if size <= 0:
             return b''
 
-        read_all = size < 0
-
-        while (read_all or len(self._buffer) < size) and len(self._buffer) < self._max_buffer_size:
+        while self._chunks_total - self._chunk_offset < size:
             chunk = self._in_stream.read(Constants.DEFAULT_BUFFER_SIZE)
             if not chunk:
                 break
+            self._chunks.append(chunk)
+            self._chunks_total += len(chunk)
 
-            self._buffer.extend(chunk)
-
-        if read_all:
-            available = len(self._buffer)
-        else:
-            available = min(len(self._buffer), size)
-
+        available = min(size, self._chunks_total - self._chunk_offset)
         if available == 0:
             return b''
 
-        data = self._buffer[:available]
-        del self._buffer[:available]
+        if len(self._chunks) == 1 and self._chunk_offset == 0 and available == len(self._chunks[0]):
+            data = self._chunks[0]
+            self._chunks.clear()
+            self._chunks_total = 0
+            self._chunk_offset = 0
+        else:
+            data = self._collect(available)
 
         if self._bypass:
             self._out_stream.write(data)
-            if len(data) >= Constants.DEFAULT_BUFFER_SIZE:
-                self._out_stream.flush()
 
-        return bytes(data)
+        return data
+
+    def _collect(self, size: int) -> bytes:
+        """Собрать size байт из чанков."""
+        parts = []
+        remaining = size
+        while remaining > 0 and self._chunks:
+            chunk = self._chunks[0]
+            chunk_avail = len(chunk) - self._chunk_offset
+            if chunk_avail <= remaining:
+                parts.append(chunk[self._chunk_offset:] if self._chunk_offset else chunk)
+                remaining -= chunk_avail
+                self._chunks.pop(0)
+                self._chunks_total -= len(chunk)
+                self._chunk_offset = 0
+            else:
+                parts.append(chunk[self._chunk_offset:self._chunk_offset + remaining])
+                self._chunk_offset += remaining
+                remaining = 0
+        return b''.join(parts)
 
 
 class DumpIO:
@@ -657,51 +590,13 @@ class TocParser:
         return dependencies
 
 
-class StreamingLineBuffer:
-    """Буфер для потоковой обработки строк с сохранением целостности."""
-
-    def __init__(self):
-        self._buffer = bytearray()  # Используем bytearray для эффективной конкатенации
-        self._processed_size = 0
-
-    def add_chunk(self, chunk: bytes) -> bytes:
-        """
-        Добавляет чанк данных и возвращает завершенные строки для обработки.
-        Оптимизировано: использует bytearray для избежания квадратичной сложности.
-        :param chunk: новый чанк данных
-        :return: завершенные строки для обработки
-        """
-        self._buffer.extend(chunk)
-
-        last_newline = self._buffer.rfind(b'\n')
-        if last_newline == -1:
-            return b''
-
-        complete_lines = bytes(self._buffer[:last_newline + 1])
-        del self._buffer[:last_newline + 1]
-
-        return complete_lines
-
-    def get_remaining(self) -> bytes:
-        """
-        Возвращает оставшиеся данные в буфере.
-        :return: незавершенные данные
-        """
-        return bytes(self._buffer)
-
-    def clear(self):
-        """Очищает буфер."""
-        self._buffer.clear()
-
-
 class DataBlockProcessor:
-    """Обработчик блоков данных с поддержкой сжатия и потоковой обработки."""
+    """Обработчик блоков данных с потоковой обработкой decompress→process→compress."""
 
-    def __init__(self, dio: DumpIO, processor: DataParser):
+    def __init__(self, dio: DumpIO, processor: PgStageParser):
         """
-        Инициализация процессора блоков данных.
         :param dio: объект для работы с бинарным I/O
-        :param processor: процессор данных
+        :param processor: процессор данных (PgStageParser)
         """
         self.dio = dio
         self.processor = processor
@@ -721,208 +616,169 @@ class DataBlockProcessor:
         :param compression: метод сжатия
         """
         if compression in (CompressionMethod.ZLIB, CompressionMethod.RAW):
-            self._process_compressed_block(input_stream, output_stream, dump_id)
+            self._process_compressed_block_streaming(input_stream, output_stream, dump_id)
         else:
             self._process_uncompressed_block(input_stream, output_stream, dump_id)
 
-    def _process_compressed_block(
+    def _process_compressed_block_streaming(
         self,
         input_stream: Union[BinaryIO, BufferedStreamReader],
         output_stream: BinaryIO,
         dump_id: DumpId,
     ) -> None:
         """
-        Потоковая обработка сжатого блока данных ZLIB без загрузки в память.
+        Потоковая обработка сжатого блока: decompress→process lines→compress
+        в одном проходе без промежуточных файлов. Память ограничена размером чанка.
+
         :param input_stream: входной поток
         :param output_stream: выходной поток
         :param dump_id: ID записи дампа
         """
-        decmop_prefix = f'{Constants.TMP_FILE_PREFIX}decomp_'
-        proc_prefix = f'{Constants.TMP_FILE_PREFIX}proc_'
-        decompressed_fd, decompressed_path = tempfile.mkstemp(prefix=decmop_prefix, dir=Constants.DEFAULT_TMP_DIR)
-        processed_fd, processed_path = tempfile.mkstemp(prefix=proc_prefix, dir=Constants.DEFAULT_TMP_DIR)
-
-        try:
-            self._stream_decompress(input_stream, decompressed_fd)
-            self._stream_process_lines(decompressed_path, processed_fd)
-            self._stream_compress_and_write(processed_path, output_stream, dump_id)
-        finally:
-            for fd in [decompressed_fd, processed_fd]:
-                if fd is not None:
-                    with suppress(Exception):
-                        os.close(fd)
-
-            for path in [decompressed_path, processed_path]:
-                if path and os.path.exists(path):
-                    for _ in range(3):
-                        try:
-                            os.unlink(path)
-                            break
-                        except (OSError, PermissionError) as error:
-                            time.sleep(0.1)
-
-    def _stream_decompress(self, input_stream: Union[BinaryIO, BufferedStreamReader], output_fd: int) -> None:
-        """
-        Потоковая декомпрессия данных с оптимизацией для больших блоков.
-        :param input_stream: входной поток
-        :param output_fd: файловый дескриптор для записи
-        """
-        decompressor = zlib.decompressobj()
-        remaining_chunk = bytearray()
-
-        with os.fdopen(output_fd, 'wb', buffering=Constants.COMPRESSION_BUFFER_SIZE) as output_file:
-            while True:
-                try:
-                    chunk_size = self.dio.read_int(input_stream)
-                except Exception as error:
-                    message = f'Error reading chunk size: {error}'
-                    raise PgDumpError(message) from error
-
-                if chunk_size == 0:
-                    break
-
-                if chunk_size > Constants.MAX_CHUNK_SIZE:
-                    message = f'Chunk size too large: {chunk_size}'
-                    raise PgDumpError(message)
-
-                chunk_data = bytearray()
-                remaining = chunk_size
-                while remaining > 0:
-                    read_size = min(remaining, Constants.DEFAULT_BUFFER_SIZE)
-                    data = input_stream.read(read_size)
-                    if len(data) != read_size:
-                        message = f'Expected {read_size} bytes, got {len(data)}'
-                        raise PgDumpError(message)
-                    chunk_data.extend(data)
-                    remaining -= read_size
-
-                remaining_chunk.extend(chunk_data)
-
-                try:
-                    decompressed_chunk = decompressor.decompress(bytes(remaining_chunk))
-                    if decompressed_chunk:
-                        output_file.write(decompressed_chunk)
-
-                    # Сохраняем необработанный хвост
-                    unconsumed = decompressor.unconsumed_tail
-                    remaining_chunk = bytearray(unconsumed)
-
-                except zlib.error as error:
-                    message = f'Decompression error: {error}'
-                    raise PgDumpError(message) from error
-
-                if chunk_size < Constants.ZLIB_CHUNK_SIZE:
-                    break
-
-            try:
-                final_data = decompressor.flush()
-                if final_data:
-                    output_file.write(final_data)
-            except zlib.error as error:
-                message = f'Final decompression error: {error}'
-                raise PgDumpError(message) from error
-
-    def _stream_process_lines(self, input_path: str, output_fd: int) -> None:
-        """
-        Потоковая обработка данных с сохранением целостности строк (оптимизированная версия).
-        Обрабатывает данные построчно без загрузки больших чанков в память.
-        :param input_path: путь к файлу с данными для обработки
-        :param output_fd: файловый дескриптор для записи результата
-        """
-        with open(input_path, 'rb', buffering=Constants.PROCESSING_BUFFER_SIZE) as input_file:
-            with os.fdopen(output_fd, 'wb', buffering=Constants.COMPRESSION_BUFFER_SIZE) as output_file:
-                batch_bytes = bytearray()
-                max_batch_size = Constants.PROCESSING_BUFFER_SIZE
-                
-                for line_bytes in input_file:
-                    processed = self._process_single_line(line_bytes)
-                    if processed:
-                        batch_bytes.extend(processed)
-                    
-                    if len(batch_bytes) >= max_batch_size:
-                        output_file.write(batch_bytes)
-                        batch_bytes.clear()
-                
-                if batch_bytes:
-                    output_file.write(batch_bytes)
-                
-                if hasattr(self.processor, 'flush'):
-                    remaining = self.processor.flush()
-                    if remaining:
-                        if isinstance(remaining, str):
-                            remaining = remaining.encode('utf-8')
-                        output_file.write(remaining)
-    
-    def _process_single_line(self, line_bytes: bytes) -> bytes:
-        """
-        Обработать одну строку байтов.
-        :param line_bytes: байты строки (может быть без \n в конце)
-        :return: обработанные байты
-        """
-        if not line_bytes:
-            return b''
-        
-        has_newline = line_bytes.endswith(b'\n')
-        if has_newline:
-            line_bytes = line_bytes[:-1]
-        
-        try:
-            processed = self.processor.parse(line_bytes)
-            if isinstance(processed, bytes):
-                result = processed
-            elif isinstance(processed, str):
-                result = processed.encode('utf-8')
-            else:
-                result = line_bytes
-        except Exception:
-            result = line_bytes
-        
-        return result + (b'\n' if has_newline else b'')
-
-    def _process_data_chunk(self, data: bytes) -> bytes:
-        """
-        Обрабатывает чанк данных через процессор (устаревший метод, используется для совместимости).
-        :param data: данные для обработки
-        :return: обработанные данные
-        """
-        try:
-            processed_data = self.processor.parse(data)
-            if isinstance(processed_data, str):
-                return processed_data.encode('utf-8')
-            return processed_data
-        except Exception as error:
-            message = f'Processing error: {error}'
-            raise PgDumpError(message) from error
-
-    def _stream_compress_and_write(self, input_path: str, output_stream: BinaryIO, dump_id: DumpId) -> None:
-        """
-        Потоковая компрессия и запись результата.
-        :param input_path: путь к файлу с обработанными данными
-        :param output_stream: выходной поток
-        :param dump_id: ID записи дампа
-        """
-        compressor = zlib.compressobj(level=Constants.COMPRESSION_LEVEL)
-
         output_stream.write(BlockType.DATA)
         output_stream.write(self.dio.write_int(dump_id))
 
-        with open(input_path, 'rb') as input_file:
-            while True:
-                chunk = input_file.read(Constants.COMPRESSION_BUFFER_SIZE)
-                if not chunk:
-                    break
+        decompressor = zlib.decompressobj()
+        compressor = zlib.compressobj(level=Constants.COMPRESSION_LEVEL)
+        line_tail = b''
 
-                compressed_chunk = compressor.compress(chunk)
-                if compressed_chunk:
-                    output_stream.write(self.dio.write_int(len(compressed_chunk)))
-                    output_stream.write(compressed_chunk)
+        while True:
+            chunk_size = self.dio.read_int(input_stream)
+            if chunk_size == 0:
+                break
+
+            if chunk_size > Constants.MAX_CHUNK_SIZE:
+                message = f'Chunk size too large: {chunk_size}'
+                raise PgDumpError(message)
+
+            compressed_data = input_stream.read(chunk_size)
+            if len(compressed_data) != chunk_size:
+                message = f'Expected {chunk_size} bytes, got {len(compressed_data)}'
+                raise PgDumpError(message)
+
+            try:
+                decompressed = decompressor.decompress(compressed_data)
+            except zlib.error as error:
+                message = f'Decompression error: {error}'
+                raise PgDumpError(message) from error
+
+            if decompressed:
+                line_tail = self._process_and_compress(
+                    line_tail + decompressed, compressor, output_stream, is_final=False,
+                )
+
+        try:
+            final_decomp = decompressor.flush()
+        except zlib.error as error:
+            message = f'Final decompression error: {error}'
+            raise PgDumpError(message) from error
+
+        if final_decomp:
+            line_tail = self._process_and_compress(
+                line_tail + final_decomp, compressor, output_stream, is_final=False,
+            )
+
+        if line_tail:
+            self._compress_and_write_chunk(
+                self._process_line_bytes(line_tail, has_newline=False),
+                compressor, output_stream,
+            )
 
         final_compressed = compressor.flush()
         if final_compressed:
             output_stream.write(self.dio.write_int(len(final_compressed)))
             output_stream.write(final_compressed)
 
+        output_stream.write(self.dio.write_int(0))
         output_stream.flush()
+
+    def _process_and_compress(
+        self,
+        data: bytes,
+        compressor,
+        output_stream: BinaryIO,
+        *,
+        is_final: bool,
+    ) -> bytes:
+        """
+        Обработать строки в данных и сжать результат.
+        Возвращает незавершённый хвост (неполная строка без \\n).
+
+        :param data: данные для обработки (могут содержать неполную строку в конце)
+        :param compressor: zlib compressor object
+        :param output_stream: выходной поток
+        :param is_final: True если это последние данные
+        :return: хвост без \\n (неполная строка)
+        """
+        last_newline = data.rfind(b'\n')
+        if last_newline == -1:
+            if is_final:
+                self._compress_and_write_chunk(
+                    self._process_line_bytes(data, has_newline=False),
+                    compressor, output_stream,
+                )
+                return b''
+            return data
+
+        complete = data[:last_newline + 1]
+        tail = data[last_newline + 1:]
+
+        processed = self._process_complete_lines(complete)
+        self._compress_and_write_chunk(processed, compressor, output_stream)
+
+        return tail
+
+    def _process_complete_lines(self, data: bytes) -> bytes:
+        """
+        Обработать блок завершённых строк (каждая заканчивается \\n).
+        :param data: данные с завершёнными строками
+        :return: обработанные данные
+        """
+        result_parts = []
+        start = 0
+        while start < len(data):
+            newline_pos = data.find(b'\n', start)
+            if newline_pos == -1:
+                break
+            line_bytes = data[start:newline_pos]
+            start = newline_pos + 1
+            result_parts.append(self._process_line_bytes(line_bytes, has_newline=True))
+        return b''.join(result_parts)
+
+    def _process_line_bytes(self, line_bytes: bytes, *, has_newline: bool) -> bytes:
+        """
+        Обработать одну строку через обфускатор.
+        :param line_bytes: байты строки (без \\n)
+        :param has_newline: добавить \\n в конец результата
+        :return: обработанные байты
+        """
+        if not line_bytes:
+            return b'\n' if has_newline else b''
+
+        try:
+            line = line_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            return line_bytes + (b'\n' if has_newline else b'')
+
+        processed = self.processor.process_line(line)
+        if isinstance(processed, str):
+            result = processed.encode('utf-8') if processed != line else line_bytes
+        else:
+            result = line_bytes
+        return result + (b'\n' if has_newline else b'')
+
+    def _compress_and_write_chunk(self, data: bytes, compressor, output_stream: BinaryIO) -> None:
+        """
+        Сжать данные и записать как чанк в выходной поток.
+        :param data: данные для сжатия
+        :param compressor: zlib compressor object
+        :param output_stream: выходной поток
+        """
+        if not data:
+            return
+        compressed = compressor.compress(data)
+        if compressed:
+            output_stream.write(self.dio.write_int(len(compressed)))
+            output_stream.write(compressed)
 
     def _process_uncompressed_block(
         self,
@@ -931,9 +787,7 @@ class DataBlockProcessor:
         dump_id: DumpId,
     ) -> None:
         """
-        Обработка несжатого блока данных с потоковой обработкой (оптимизированная версия).
-        Обрабатывает данные построчно для экономии памяти на больших таблицах.
-        Полностью потоковая обработка без загрузки всего блока в память.
+        Потоковая обработка несжатого блока данных.
         :param input_stream: входной поток
         :param output_stream: выходной поток
         :param dump_id: ID записи дампа
@@ -941,79 +795,48 @@ class DataBlockProcessor:
         output_stream.write(BlockType.DATA)
         output_stream.write(self.dio.write_int(dump_id))
 
-        line_buffer = StreamingLineBuffer()
-        output_batch = bytearray()
-        max_batch_size = Constants.PROCESSING_BUFFER_SIZE
-
-        def write_batch():
-            """Записать накопленный батч в поток."""
-            nonlocal output_batch
-            if output_batch:
-                batch_data = bytes(output_batch)
-                output_stream.write(self.dio.write_int(len(batch_data)))
-                output_stream.write(batch_data)
-                output_batch.clear()
+        line_tail = b''
+        output_buf = bytearray()
 
         while True:
             size = self.dio.read_int(input_stream)
-            if not size or size <= 0:
+            if size <= 0:
                 break
 
             remaining = size
             while remaining > 0:
                 read_size = min(remaining, Constants.DEFAULT_BUFFER_SIZE)
                 data = input_stream.read(read_size)
-                
                 if len(data) != read_size:
                     message = f'Expected {read_size} bytes, got {len(data)}'
                     raise PgDumpError(message)
-
-                complete_lines = line_buffer.add_chunk(data)
-                if complete_lines:
-                    processed_data = self.processor.parse(complete_lines)
-                    if isinstance(processed_data, str):
-                        processed_data = processed_data.encode('utf-8')
-                    
-                    if processed_data:
-                        output_batch.extend(processed_data)
-                        
-                        if len(output_batch) >= max_batch_size:
-                            write_batch()
-
                 remaining -= read_size
 
-        remaining_data = line_buffer.get_remaining()
-        if remaining_data:
-            processed_data = self.processor.parse(remaining_data)
-            if isinstance(processed_data, str):
-                processed_data = processed_data.encode('utf-8')
-            
-            if processed_data:
-                output_batch.extend(processed_data)
+                chunk = line_tail + data
+                last_nl = chunk.rfind(b'\n')
+                if last_nl == -1:
+                    line_tail = chunk
+                    continue
 
-        if hasattr(self.processor, 'flush'):
-            remaining = self.processor.flush()
-            if remaining:
-                if isinstance(remaining, str):
-                    remaining = remaining.encode('utf-8')
-                output_batch.extend(remaining)
+                complete = chunk[:last_nl + 1]
+                line_tail = chunk[last_nl + 1:]
 
-        write_batch()
+                processed = self._process_complete_lines(complete)
+                output_buf.extend(processed)
+
+                if len(output_buf) >= Constants.OUTPUT_CHUNK_SIZE:
+                    output_stream.write(self.dio.write_int(len(output_buf)))
+                    output_stream.write(output_buf)
+                    output_buf.clear()
+
+        if line_tail:
+            output_buf.extend(self._process_line_bytes(line_tail, has_newline=False))
+
+        if output_buf:
+            output_stream.write(self.dio.write_int(len(output_buf)))
+            output_stream.write(output_buf)
 
         output_stream.write(self.dio.write_int(0))
-        output_stream.flush()
-
-    def _write_data_block(self, output_stream: BinaryIO, dump_id: DumpId, data: bytes) -> None:
-        """
-        Запись обработанного блока данных в выходной поток.
-        :param output_stream: выходной поток
-        :param dump_id: ID записи дампа
-        :param data: данные для записи
-        """
-        output_stream.write(BlockType.DATA)
-        output_stream.write(self.dio.write_int(dump_id))
-        output_stream.write(self.dio.write_int(len(data)))
-        output_stream.write(data)
         output_stream.flush()
 
 
@@ -1130,7 +953,8 @@ class DumpProcessor:
         dump_id: DumpId,
     ) -> None:
         """
-        Передача блока без обработки с оптимизацией для больших блоков.
+        Передача блока без обработки. Корректно обрабатывает формат
+        с множеством чанков (size + data), завершённый size=0.
         :param input_stream: входной поток
         :param output_stream: выходной поток
         :param block_type: тип блока
@@ -1139,40 +963,28 @@ class DumpProcessor:
         output_stream.write(block_type)
         output_stream.write(self.dio.write_int(dump_id))
 
-        size = self.dio.read_int(input_stream)
-        output_stream.write(self.dio.write_int(size))
+        while True:
+            size = self.dio.read_int(input_stream)
+            output_stream.write(self.dio.write_int(size))
 
-        remaining = size
-        while remaining > 0:
-            chunk_size = min(remaining, Constants.DEFAULT_BUFFER_SIZE)
-            chunk = input_stream.read(chunk_size)
-            if not chunk:
-                message = f'Unexpected EOF while copying block data, {remaining} bytes remaining'
-                raise PgDumpError(message)
+            if size <= 0:
+                break
 
-            output_stream.write(chunk)
-            remaining -= len(chunk)
+            remaining = size
+            while remaining > 0:
+                read_size = min(remaining, Constants.DEFAULT_BUFFER_SIZE)
+                chunk = input_stream.read(read_size)
+                if not chunk:
+                    message = f'Unexpected EOF while copying block data, {remaining} bytes remaining'
+                    raise PgDumpError(message)
+                output_stream.write(chunk)
+                remaining -= len(chunk)
 
         output_stream.flush()
 
 
 class CustomObfuscator(PlainObfuscator):
     """Главный класс для работы с обфускатором."""
-
-    @staticmethod
-    def cleanup_tmp_files(*, prefix: str) -> None:
-        """Удаляет файлы с указанным префиксом"""
-        pattern = f'{prefix}*'
-        files_to_delete = glob.glob(pattern)
-
-        for file_name in files_to_delete:
-            file_path = f'{Constants.DEFAULT_TMP_DIR}/{file_name}'
-            try:
-                if file_path and os.path.exists(file_path):
-                    os.unlink(file_path)
-            except OSError as e:
-                message = f'Error cleaning up file {file_path}: {e}'
-                raise PgDumpError(message) from e
 
     def run(self, *, stdin=None) -> None:
         """
@@ -1185,8 +997,5 @@ class CustomObfuscator(PlainObfuscator):
         if not isinstance(stdin, io.BufferedReader):
             stdin = stdin.buffer
 
-        try:
-            dump_processor = DumpProcessor(data_parser=PgStageParser(parser=self._parse_line))
-            return dump_processor.process_stream(stdin, sys.stdout.buffer)
-        finally:
-            self.cleanup_tmp_files(prefix=Constants.TMP_FILE_PREFIX)
+        dump_processor = DumpProcessor(data_parser=PgStageParser(parser=self._parse_line))
+        dump_processor.process_stream(stdin, sys.stdout.buffer)
