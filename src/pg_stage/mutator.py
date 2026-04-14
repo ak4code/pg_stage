@@ -1,6 +1,7 @@
 import datetime
 import hashlib
 import hmac
+import json
 import random
 import uuid
 from os import environ
@@ -609,3 +610,46 @@ class Mutator:
         rng.shuffle(digits_list)
 
         return f'{not_obfuscated_digits}{"".join(digits_list)}'
+
+    def mutation_json_update(self, **kwargs: Any) -> str:
+        """
+        Метод для частичного обновления JSON-поля.
+        :param kwargs:
+            current_value - текущее значение JSON-поля из БД
+            <json_key> - словарь с ``mutation_name`` и дополнительными параметрами мутации
+        :return: строка с обновлённым JSON
+        """
+        current_value: Optional[str] = kwargs.get('current_value')
+        if not current_value or current_value == '\\N':
+            return current_value or '\\N'
+
+        try:
+            data: dict = json.loads(current_value)
+        except (json.JSONDecodeError, ValueError):
+            msg = f'Invalid JSON value: {current_value!r}'
+            raise ValueError(msg)
+
+        # Все kwargs кроме 'current_value' трактуются как ключи JSON-объекта
+        _system_keys = {'current_value'}
+        key_mutations: dict = {k: v for k, v in kwargs.items() if k not in _system_keys}
+
+        for key, key_mutation in key_mutations.items():
+            mutation_name: str = key_mutation.get('mutation_name', '')
+            if not mutation_name:
+                msg = f'mutation_name not specified for key "{key}"'
+                raise ValueError(msg)
+
+            if mutation_name == 'delete':
+                data.pop(key, None)
+                continue
+
+            mutation_func = getattr(self, f'mutation_{mutation_name}', None)
+            if not mutation_func:
+                msg = f'Not found mutation "{mutation_name}" for key "{key}".'
+                raise ValueError(msg)
+
+            # Передаём все параметры из описания мутации ключа, кроме mutation_name
+            call_kwargs = {k: v for k, v in key_mutation.items() if k != 'mutation_name'}
+            data[key] = mutation_func(**call_kwargs)
+
+        return json.dumps(data, ensure_ascii=False)
