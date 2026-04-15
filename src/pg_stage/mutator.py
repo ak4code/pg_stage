@@ -625,8 +625,12 @@ class Mutator:
 
         try:
             data: dict = json.loads(current_value)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError) as error:
             msg = f'Invalid JSON value: {current_value!r}'
+            raise ValueError(msg) from error
+
+        if not isinstance(data, dict):
+            msg = f'json_update expects a JSON object: {current_value!r}'
             raise ValueError(msg)
 
         # Все kwargs кроме 'current_value' трактуются как ключи JSON-объекта
@@ -635,6 +639,10 @@ class Mutator:
 
         for key, key_mutation in key_mutations.items():
             mutation_name: str = key_mutation.get('mutation_name', '')
+            if not isinstance(key_mutation, dict):
+                msg = f'The value for key "{key}" must be an object (dict), but got {type(key_mutation).__name__}'
+                raise ValueError(msg)
+
             if not mutation_name:
                 msg = f'mutation_name not specified for key "{key}"'
                 raise ValueError(msg)
@@ -654,6 +662,10 @@ class Mutator:
 
             # Передаём все параметры из описания мутации ключа, кроме mutation_name
             call_kwargs = {k: v for k, v in key_mutation.items() if k != 'mutation_name'}
+            call_kwargs.setdefault('current_value', data.get(key))
+            if 'obfuscated_values' in kwargs:  # пробрасываем только если есть, не навязываем
+                call_kwargs.setdefault('obfuscated_values', kwargs['obfuscated_values'])
+
             data[key] = mutation_func(**call_kwargs)
 
         return json.dumps(data, ensure_ascii=False)
