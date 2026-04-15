@@ -643,6 +643,10 @@ class Mutator:
                 data.pop(key, None)
                 continue
 
+            if mutation_name == 'null':
+                data[key] = None
+                continue
+
             mutation_func = getattr(self, f'mutation_{mutation_name}', None)
             if not mutation_func:
                 msg = f'Not found mutation "{mutation_name}" for key "{key}".'
