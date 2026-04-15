@@ -25,11 +25,11 @@ def test_json_update_existing_key_is_replaced(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            name={'mutation_name': 'first_name'},
+            name={'mutation_name': 'fixed_value', 'value': 'John'},
         )
     )
 
-    assert result['name'] != 'Alice'  # nosec
+    assert result['name'] == 'John'  # nosec
     assert isinstance(result['name'], str) and result['name']  # nosec
     assert result['score'] == 42  # nosec
 
@@ -242,13 +242,13 @@ def test_json_update_combined_operations(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            first_name={'mutation_name': 'first_name'},
+            first_name={'mutation_name': 'fixed_value', 'value': 'John'},
             secret={'mutation_name': 'delete'},
             notes={'mutation_name': 'null'},
         )
     )
 
-    assert result['first_name'] != 'Alice'  # nosec
+    assert result['first_name'] == 'John'  # nosec
     assert 'secret' not in result  # nosec
     assert result['notes'] is None  # nosec
     assert result['untouched'] == 'keep me'  # nosec

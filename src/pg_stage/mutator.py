@@ -633,15 +633,16 @@ class Mutator:
             msg = f'json_update expects a JSON object: {current_value!r}'
             raise ValueError(msg)
 
-        # Все kwargs кроме 'current_value' трактуются как ключи JSON-объекта
-        _system_keys = {'current_value'}
+        # Все kwargs кроме служебных параметров трактуются как ключи JSON-объекта
+        _system_keys = {'current_value', 'obfuscated_values'}
         key_mutations: dict = {k: v for k, v in kwargs.items() if k not in _system_keys}
 
         for key, key_mutation in key_mutations.items():
-            mutation_name: str = key_mutation.get('mutation_name', '')
             if not isinstance(key_mutation, dict):
                 msg = f'The value for key "{key}" must be an object (dict), but got {type(key_mutation).__name__}'
                 raise ValueError(msg)
+
+            mutation_name: str = key_mutation.get('mutation_name', '')
 
             if not mutation_name:
                 msg = f'mutation_name not specified for key "{key}"'
