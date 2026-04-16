@@ -620,17 +620,19 @@ class Mutator:
         :return: строка с обновлённым JSON
         """
         current_value: Optional[str] = kwargs.get('current_value')
-        if not current_value or current_value == '\\N':
-            return current_value or '\\N'
+        if current_value is None:
+            return '\\N'
+        if current_value == '\\N':
+            return current_value
 
         try:
             data: dict = json.loads(current_value)
         except (json.JSONDecodeError, ValueError) as error:
-            msg = f'Invalid JSON value: {current_value!r}'
+            msg = f'Invalid JSON value'
             raise ValueError(msg) from error
 
         if not isinstance(data, dict):
-            msg = f'json_update expects a JSON object: {current_value!r}'
+            msg = f'json_update expects a JSON object'
             raise ValueError(msg)
 
         # Все kwargs кроме служебных параметров трактуются как ключи JSON-объекта

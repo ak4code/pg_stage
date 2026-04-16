@@ -17,7 +17,7 @@ def mutator() -> Mutator:
 
 def test_json_update_existing_key_is_replaced(mutator: Mutator) -> None:
     """
-    Arrange: JSON с ключом `name`; мутация заменяет его через first_name
+    Arrange: JSON с ключом `name`; мутация fixed_value заменяет его на заданное значение
     Act: вызов mutation_json_update
     Assert: значение `name` изменилось, остальные ключи не тронуты
     """
@@ -34,24 +34,36 @@ def test_json_update_existing_key_is_replaced(mutator: Mutator) -> None:
     assert result['score'] == 42  # nosec
 
 
-def test_json_update_existing_key_passes_current_value(mutator: Mutator) -> None:
+def test_json_update_existing_key_passes_current_value(
+    mutator: Mutator, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
-    Arrange: JSON с ключом `phone`; мутация fixed_value явно не передаёт current_value —
-             он должен подставиться автоматически из текущего значения ключа.
-             Проверяем через fixed_value, что call_kwargs формируется без ошибок.
+    Arrange: JSON с ключом `phone`; подменяем внутреннюю мутацию,
+             чтобы она возвращала значение на основе current_value
     Act: вызов mutation_json_update
-    Assert: ключ заменён на заданное значение (fixed_value работает корректно)
+    Assert: во внутреннюю мутацию автоматически передано текущее значение ключа
     """
     original = {'phone': '+70000000000', 'role': 'admin'}
+
+    def fake_mutation(*, current_value: str, **kwargs) -> str:
+        return f"masked:{current_value}"
+
+    monkeypatch.setattr(
+        mutator,
+        'mutation_test_echo',
+        fake_mutation,
+        raising=False,
+    )
+
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            phone={'mutation_name': 'fixed_value', 'value': 'REDACTED'},
+            phone={'mutation_name': 'test_echo'},
         )
     )
 
-    assert result['phone'] == 'REDACTED'  # nosec
-    assert result['role'] == 'admin'  # nosec
+    assert result['phone'] == 'masked:+70000000000'
+    assert result['role'] == 'admin'
 
 
 # ---------------------------------------------------------------------------
