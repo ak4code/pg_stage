@@ -645,6 +645,7 @@ class Mutator:
                 raise ValueError(msg)
 
             mutation_name: str = key_mutation.get('mutation_name', '')
+            original_value = data.get(key)
 
             if not mutation_name:
                 msg = f'mutation_name not specified for key "{key}"'
@@ -665,10 +666,25 @@ class Mutator:
 
             # Передаём все параметры из описания мутации ключа, кроме mutation_name
             call_kwargs = {k: v for k, v in key_mutation.items() if k != 'mutation_name'}
-            call_kwargs.setdefault('current_value', data.get(key))
+
+            normalized_current_value = original_value
+            if original_value is not None and not isinstance(original_value, str):
+                normalized_current_value = json.dumps(original_value, ensure_ascii=False)
+
+            call_kwargs.setdefault('current_value', normalized_current_value)
+
             if 'obfuscated_values' in kwargs:  # пробрасываем только если есть, не навязываем
                 call_kwargs.setdefault('obfuscated_values', kwargs['obfuscated_values'])
 
-            data[key] = mutation_func(**call_kwargs)
+            new_value = mutation_func(**call_kwargs)
+
+            # сохраняем исходный тип JSON-значения
+            if original_value is not None:
+                try:
+                    new_value = type(original_value)(new_value)
+                except (TypeError, ValueError):
+                    pass
+
+            data[key] = new_value
 
         return json.dumps(data, ensure_ascii=False)
