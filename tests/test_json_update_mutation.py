@@ -66,6 +66,23 @@ def test_json_update_existing_key_passes_current_value(
     assert result['role'] == 'admin'
 
 
+def test_json_update_preserving_the_numeric_type(mutator: Mutator) -> None:
+    """
+    Arrange: JSON с числовым ключом `score`
+    Act: вызов mutation mutation_numeric_integer внутри mutation_json_update
+    Assert: исходный числовой тип ключа `score` сохранится
+    """
+    original = {'score': 42}
+    result = json.loads(
+        mutator.mutation_json_update(
+            current_value=json.dumps(original),
+            score={'mutation_name': 'numeric_integer'}
+        )
+    )
+
+    assert isinstance(result['score'], int)
+
+
 # ---------------------------------------------------------------------------
 # Добавление отсутствующего ключа
 # ---------------------------------------------------------------------------
