@@ -661,7 +661,7 @@ class Mutator:
 
             mutation_func = getattr(self, f'mutation_{mutation_name}', None)
             if not mutation_func:
-                msg = f'Not found mutation "{mutation_name}" for key "{key}".'
+                msg = f'Not found mutation "{mutation_name}"'
                 raise ValueError(msg)
 
             # Передаём все параметры из описания мутации ключа, кроме mutation_name
@@ -678,10 +678,10 @@ class Mutator:
 
             new_value = mutation_func(**call_kwargs)
 
-            # сохраняем исходный тип JSON-значения
-            if original_value is not None:
+            # сохраняем исходный тип числового значения
+            if isinstance(original_value, int):
                 try:
-                    new_value = type(original_value)(new_value)
+                    new_value = int(new_value)
                 except (TypeError, ValueError):
                     pass
 
