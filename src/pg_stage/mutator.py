@@ -620,20 +620,16 @@ class Mutator:
         :return: строка с обновлённым JSON
         """
         current_value: Optional[str] = kwargs.get('current_value')
-        if current_value is None:
+        if current_value in (None, '\\N'):
             return '\\N'
-        if current_value == '\\N':
-            return current_value
 
         try:
             data: dict = json.loads(current_value)
         except (json.JSONDecodeError, ValueError) as error:
-            msg = f'Invalid JSON value'
-            raise ValueError(msg) from error
+            raise ValueError('Invalid JSON value') from error
 
         if not isinstance(data, dict):
-            msg = f'json_update expects a JSON object'
-            raise ValueError(msg)
+            raise ValueError('json_update expects a dict object')
 
         # Все kwargs кроме служебных параметров трактуются как ключи JSON-объекта
         _system_keys = {'current_value', 'obfuscated_values'}
@@ -641,15 +637,15 @@ class Mutator:
 
         for key, key_mutation in key_mutations.items():
             if not isinstance(key_mutation, dict):
-                msg = f'The value for key "{key}" must be an object (dict), but got {type(key_mutation).__name__}'
-                raise ValueError(msg)
+                raise ValueError(
+                    f'The value for key "{key}" must be an object (dict), but got {type(key_mutation).__name__}'
+                )
 
             mutation_name: str = key_mutation.get('mutation_name', '')
             original_value = data.get(key)
 
             if not mutation_name:
-                msg = f'mutation_name not specified for key "{key}"'
-                raise ValueError(msg)
+                raise ValueError(f'mutation_name not specified for key "{key}"')
 
             if mutation_name == 'delete':
                 data.pop(key, None)
@@ -661,8 +657,7 @@ class Mutator:
 
             mutation_func = getattr(self, f'mutation_{mutation_name}', None)
             if not mutation_func:
-                msg = f'Not found mutation "{mutation_name}"'
-                raise ValueError(msg)
+                raise ValueError(f'Not found mutation "{mutation_name}"')
 
             # Передаём все параметры из описания мутации ключа, кроме mutation_name
             call_kwargs = {k: v for k, v in key_mutation.items() if k != 'mutation_name'}

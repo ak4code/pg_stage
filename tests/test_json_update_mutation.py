@@ -212,7 +212,7 @@ def test_json_update_json_array_raises(mutator: Mutator) -> None:
     Act: вызов mutation_json_update
     Assert: поднимается ValueError
     """
-    with pytest.raises(ValueError, match='json_update expects a JSON object'):
+    with pytest.raises(ValueError, match='json_update expects a dict object'):
         mutator.mutation_json_update(
             current_value='[1, 2, 3]',
             name={'mutation_name': 'first_name'},
@@ -225,7 +225,7 @@ def test_json_update_json_scalar_raises(mutator: Mutator) -> None:
     Act: вызов mutation_json_update
     Assert: поднимается ValueError
     """
-    with pytest.raises(ValueError, match='json_update expects a JSON object'):
+    with pytest.raises(ValueError, match='json_update expects a dict object'):
         mutator.mutation_json_update(
             current_value='42',
             name={'mutation_name': 'first_name'},
