@@ -25,7 +25,11 @@ def test_json_update_existing_key_is_replaced(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            name={'mutation_name': 'fixed_value', 'value': 'John'},
+            mutations_by_key={
+                'name': [
+                    {'mutation_name': 'fixed_value', 'mutation_kwargs': {'value': 'John'}},
+                ]
+            },
         )
     )
 
@@ -58,7 +62,11 @@ def test_json_update_existing_key_passes_current_value(
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            phone={'mutation_name': 'test_echo'},
+            mutations_by_key={
+                'phone': [
+                    {'mutation_name': 'test_echo', 'mutation_kwargs': {}},
+                ]
+            },
         )
     )
 
@@ -76,7 +84,11 @@ def test_json_update_preserving_the_numeric_type(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            score={'mutation_name': 'numeric_integer'}
+            mutations_by_key={
+                'score': [
+                    {'mutation_name': 'numeric_integer', 'mutation_kwargs': {}},
+                ]
+            },
         )
     )
 
@@ -98,7 +110,11 @@ def test_json_update_missing_key_is_added(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            email={'mutation_name': 'email'},
+            mutations_by_key={
+                'email': [
+                    {'mutation_name': 'email', 'mutation_kwargs': {}},
+                ]
+            },
         )
     )
 
@@ -122,7 +138,11 @@ def test_json_update_delete_existing_key(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            secret={'mutation_name': 'delete'},
+            mutations_by_key={
+                'secret': [
+                    {'mutation_name': 'delete', 'mutation_kwargs': {}},
+                ]
+            },
         )
     )
 
@@ -140,7 +160,11 @@ def test_json_update_delete_missing_key_is_noop(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            ghost={'mutation_name': 'delete'},
+            mutations_by_key={
+                'ghost': [
+                    {'mutation_name': 'delete', 'mutation_kwargs': {}},
+                ]
+            },
         )
     )
 
@@ -162,7 +186,11 @@ def test_json_update_null_existing_key(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            notes={'mutation_name': 'null'},
+            mutations_by_key={
+                'notes': [
+                    {'mutation_name': 'null'},
+                ]
+            },
         )
     )
 
@@ -180,7 +208,11 @@ def test_json_update_null_missing_key_adds_null(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            notes={'mutation_name': 'null'},
+            mutations_by_key={
+                'notes': [
+                    {'mutation_name': 'null', 'mutation_kwargs': {}},
+                ]
+            },
         )
     )
 
@@ -202,7 +234,7 @@ def test_json_update_invalid_json_raises(mutator: Mutator) -> None:
     with pytest.raises(ValueError, match='Invalid JSON value'):
         mutator.mutation_json_update(
             current_value='not-json-at-all',
-            name={'mutation_name': 'first_name'},
+            mutations_by_key={'name': [{'mutation_name': 'first_name', 'mutation_kwargs': {}}]},
         )
 
 
@@ -212,11 +244,13 @@ def test_json_update_json_array_raises(mutator: Mutator) -> None:
     Act: вызов mutation_json_update
     Assert: поднимается ValueError
     """
-    with pytest.raises(ValueError, match='json_update expects a dict object'):
-        mutator.mutation_json_update(
-            current_value='[1, 2, 3]',
-            name={'mutation_name': 'first_name'},
-        )
+    result = mutator.mutation_json_update(
+        current_value='[1, 2, 3]',
+        mutations_by_key={'name': [{'mutation_name': 'first_name', 'mutation_kwargs': {}}]},
+    )
+
+    # Non-dict JSON is passed through unchanged (warning logged)
+    assert result == '[1, 2, 3]'
 
 
 def test_json_update_json_scalar_raises(mutator: Mutator) -> None:
@@ -225,11 +259,13 @@ def test_json_update_json_scalar_raises(mutator: Mutator) -> None:
     Act: вызов mutation_json_update
     Assert: поднимается ValueError
     """
-    with pytest.raises(ValueError, match='json_update expects a dict object'):
-        mutator.mutation_json_update(
-            current_value='42',
-            name={'mutation_name': 'first_name'},
-        )
+    result = mutator.mutation_json_update(
+        current_value='42',
+        mutations_by_key={'name': [{'mutation_name': 'first_name', 'mutation_kwargs': {}}]},
+    )
+
+    # JSON scalar is passed through unchanged (warning logged)
+    assert result == '42'
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +281,7 @@ def test_json_update_postgres_null_passthrough(mutator: Mutator) -> None:
     """
     result = mutator.mutation_json_update(
         current_value='\\N',
-        name={'mutation_name': 'first_name'},
+        mutations_by_key={'name': [{'mutation_name': 'first_name', 'mutation_kwargs': {}}]},
     )
 
     assert result == '\\N'  # nosec
@@ -271,9 +307,17 @@ def test_json_update_combined_operations(mutator: Mutator) -> None:
     result = json.loads(
         mutator.mutation_json_update(
             current_value=json.dumps(original),
-            first_name={'mutation_name': 'fixed_value', 'value': 'John'},
-            secret={'mutation_name': 'delete'},
-            notes={'mutation_name': 'null'},
+            mutations_by_key={
+                'first_name': [
+                    {'mutation_name': 'fixed_value', 'mutation_kwargs': {'value': 'John'}},
+                ],
+                'secret': [
+                    {'mutation_name': 'delete', 'mutation_kwargs': {}},
+                ],
+                'notes': [
+                    {'mutation_name': 'null', 'mutation_kwargs': {}},
+                ],
+            },
         )
     )
 
@@ -292,5 +336,58 @@ def test_json_update_unknown_mutation_raises(mutator: Mutator) -> None:
     with pytest.raises(ValueError, match='Not found mutation "nonexistent"'):
         mutator.mutation_json_update(
             current_value='{"key": "value"}',
-            key={'mutation_name': 'nonexistent'},
+            mutations_by_key={'key': [{'mutation_name': 'nonexistent', 'mutation_kwargs': {}}]},
         )
+
+
+def test_json_update_applies_mutations_recursively(mutator: Mutator) -> None:
+    """
+    Arrange: целевой ключ находится в nested dict и в dict внутри списка.
+    Act: запускаем json_update с мутацией по имени ключа.
+    Assert: мутация применена ко всем совпавшим ключам рекурсивно.
+    """
+    original = {
+        'profile': {
+            'phone': '+70000000001',
+        },
+        'contacts': [
+            {'phone': '+70000000002'},
+            {'phone': '+70000000003'},
+        ],
+    }
+
+    result = json.loads(
+        mutator.mutation_json_update(
+            current_value=json.dumps(original),
+            mutations_by_key={
+                'phone': [
+                    {'mutation_name': 'fixed_value', 'mutation_kwargs': {'value': 'MASKED'}},
+                ]
+            },
+        )
+    )
+
+    assert result['profile']['phone'] == 'MASKED'
+    assert result['contacts'][0]['phone'] == 'MASKED'
+    assert result['contacts'][1]['phone'] == 'MASKED'
+
+
+def test_json_update_key_name_can_be_current_value(mutator: Mutator) -> None:
+    """
+    Arrange: в JSON есть ключ с именем current_value.
+    Act: применяем мутацию через mutations_by_key.
+    Assert: ключ не конфликтует со служебными параметрами вызова.
+    """
+    original = {'current_value': 'sensitive'}
+    result = json.loads(
+        mutator.mutation_json_update(
+            current_value=json.dumps(original),
+            mutations_by_key={
+                'current_value': [
+                    {'mutation_name': 'fixed_value', 'mutation_kwargs': {'value': 'safe'}},
+                ]
+            },
+        )
+    )
+
+    assert result['current_value'] == 'safe'
