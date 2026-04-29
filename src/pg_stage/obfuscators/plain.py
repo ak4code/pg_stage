@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from pg_stage.mutator import Mutator
 from pg_stage.types import ConditionTypeMany, MapTablesValueTypeMany
+from pg_stage.utils import get_mutation_func, run_mutation
 
 
 class PlainObfuscator:
@@ -109,10 +110,7 @@ class PlainObfuscator:
 
         for mutation_param in mutations_params:
             mutation_name = mutation_param['mutation_name']
-            mutation_func = getattr(self._mutator, f'mutation_{mutation_name}', None)
-            if not mutation_func:
-                msg = f'Not found mutation {mutation_name}.'
-                raise ValueError(msg)
+            get_mutation_func(mutation_owner=self._mutator, mutation_name=mutation_name)
 
             try:
                 table_name, column_name = result.group(1).split('.')
@@ -124,7 +122,6 @@ class PlainObfuscator:
             self._map_tables[table_name][column_name].append(
                 {
                     'mutation_name': mutation_name,
-                    'mutation_func': mutation_func,
                     'mutation_kwargs': mutation_param.get('mutation_kwargs', {}),
                     'mutation_relations': mutation_param.get('relations', []),
                     'mutation_conditions': mutation_param.get('conditions', []),
@@ -198,13 +195,10 @@ class PlainObfuscator:
                 if is_obfuscated:
                     break
 
-                mutation_func = mutation_for_column['mutation_func']
+                mutation_name = mutation_for_column['mutation_name']
                 mutation_kwargs = mutation_for_column['mutation_kwargs']
                 mutation_relations = mutation_for_column['mutation_relations']
                 mutation_conditions = mutation_for_column['mutation_conditions']
-
-                # Сохранить текущее значение для обработки в Mutator
-                mutation_kwargs['current_value'] = table_values[column_index]
 
                 if not self._checking_conditions(conditions=mutation_conditions, table_values=table_values):
                     if mutation_index + 1 == len_mutations_for_column:
@@ -213,12 +207,19 @@ class PlainObfuscator:
 
                     continue
 
+                context_obfuscated_values = None
                 if 'source_column' in mutation_kwargs:
-                    mutation_kwargs['obfuscated_values'] = obfuscated_values
+                    context_obfuscated_values = obfuscated_values
 
                 if not mutation_relations:
                     is_obfuscated = True
-                    obfuscated_values[column_name] = mutation_func(**mutation_kwargs)
+                    obfuscated_values[column_name] = run_mutation(
+                        mutation_owner=self._mutator,
+                        mutation_name=mutation_name,
+                        mutation_kwargs=mutation_kwargs,
+                        current_value=table_values[column_index],
+                        obfuscated_values=context_obfuscated_values,
+                    )
                     continue
 
                 new_value = None
@@ -240,7 +241,13 @@ class PlainObfuscator:
 
                 if new_value is None:
                     relation_fk = str(uuid4())
-                    new_value = mutation_func(**mutation_kwargs)
+                    new_value = run_mutation(
+                        mutation_owner=self._mutator,
+                        mutation_name=mutation_name,
+                        mutation_kwargs=mutation_kwargs,
+                        current_value=table_values[column_index],
+                        obfuscated_values=context_obfuscated_values,
+                    )
                     for mutation_relation in mutation_relations:
                         key_table = f'{self._table_name}:{column_name}'
                         from_column_name = mutation_relation['from_column_name']

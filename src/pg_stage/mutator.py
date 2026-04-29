@@ -1,6 +1,8 @@
 import datetime
 import hashlib
 import hmac
+import json
+import logging
 import random
 import uuid
 from os import environ
@@ -8,6 +10,14 @@ from typing import Any, Callable, List, Optional
 
 from mimesis import Address, Datetime, Internet, Numbers, Person
 from mimesis.builtins import RussiaSpecProvider
+
+from pg_stage.utils import (
+    apply_mutations_to_json_value,
+    get_mutation_func as shared_get_mutation_func,
+    run_mutation as shared_run_mutation,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class Mutator:
@@ -106,6 +116,38 @@ class Mutator:
                 a = p
             code[i] = a
         return code.decode()
+
+    def get_mutation_func(self, *, mutation_name: str) -> Callable[..., Any]:
+        """
+        Метод для получения callable мутации по имени.
+        :param mutation_name: название мутации (без префикса 'mutation_')
+        :return: callable функция мутации
+        """
+        return shared_get_mutation_func(mutation_owner=self, mutation_name=mutation_name)
+
+    def run_mutation(
+        self,
+        *,
+        mutation_name: str,
+        mutation_kwargs: Optional[dict[str, Any]] = None,
+        current_value: Any = None,
+        obfuscated_values: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        """
+        Метод для выполнения мутации с безопасным merge runtime-контекста.
+        :param mutation_name: название мутации (без префикса 'mutation_')
+        :param mutation_kwargs: параметры мутации, опционально
+        :param current_value: текущее значение поля, опционально
+        :param obfuscated_values: словарь обфусцированных значений для cross-column операций, опционально
+        :return: результат применения мутации
+        """
+        return shared_run_mutation(
+            mutation_owner=self,
+            mutation_name=mutation_name,
+            mutation_kwargs=mutation_kwargs,
+            current_value=current_value,
+            obfuscated_values=obfuscated_values,
+        )
 
     def mutation_email(self, **kwargs: bool) -> str:
         """
@@ -609,3 +651,98 @@ class Mutator:
         rng.shuffle(digits_list)
 
         return f'{not_obfuscated_digits}{"".join(digits_list)}'
+
+    def mutation_json_update(self, **kwargs: Any) -> str:
+        """
+        Метод для частичного обновления JSON-поля по ключам.
+        :param kwargs:
+            current_value - текущее значение JSON-поля из БД
+            mutations_by_key - словарь вида:
+                {
+                    "json_key": [
+                        {
+                            "mutation_name": "mutation", 
+                            "mutation_kwargs"?: {"value": "x"}
+                        },
+                    ]
+                }
+            Каждая мутация в списке применяется последовательно.
+        :return: строка с обновлённым JSON
+        """
+        current_value: Optional[str] = kwargs.get('current_value')
+        if current_value == '\\N':
+            return current_value
+
+        try:
+            data: dict[str, Any] = json.loads(current_value)
+        except (json.JSONDecodeError, ValueError) as error:
+            raise ValueError('Invalid JSON value') from error
+
+        if not isinstance(data, dict):
+            logger.warning('json_update expects a dict object after JSON parsing')
+            return current_value
+
+        mutations_by_key: Any = kwargs.get('mutations_by_key')
+        if mutations_by_key is None:
+            raise ValueError('mutations_by_key is required')
+
+        if not isinstance(mutations_by_key, dict):
+            raise ValueError('mutations_by_key must be an object (dict)')
+
+        obfuscated_values = kwargs.get('obfuscated_values')
+        seen_keys: set[str] = set()
+
+        def walk_json(node: Any) -> Any:
+            if isinstance(node, dict):
+                updated_node: dict[str, Any] = {}
+                for key, value in node.items():
+                    nested_value = walk_json(value)
+                    key_mutations = mutations_by_key.get(key)
+                    if not key_mutations:
+                        updated_node[key] = nested_value
+                        continue
+
+                    if not isinstance(key_mutations, list):
+                        raise ValueError(f'The value for key "{key}" must be a list of mutators')
+
+                    seen_keys.add(key)
+                    is_deleted, new_value = apply_mutations_to_json_value(
+                        mutation_owner=self,
+                        value=nested_value,
+                        key_mutations=key_mutations,
+                        obfuscated_values=obfuscated_values,
+                    )
+                    if is_deleted:
+                        continue
+
+                    updated_node[key] = new_value
+
+                return updated_node
+
+            if isinstance(node, list):
+                return [walk_json(item) for item in node]
+
+            return node
+
+        updated_data = walk_json(data)
+
+        # Если ключ не найден в JSON, применяем мутации на root-уровне (как и раньше ключ добавлялся).
+        for key, key_mutations in mutations_by_key.items():
+            if key in seen_keys:
+                continue
+
+            if not isinstance(key_mutations, list):
+                raise ValueError(f'The value for key "{key}" must be a list of mutators')
+
+            is_deleted, new_value = apply_mutations_to_json_value(
+                mutation_owner=self,
+                value=None,
+                key_mutations=key_mutations,
+                obfuscated_values=obfuscated_values,
+            )
+            if is_deleted:
+                continue
+
+            updated_data[key] = new_value
+
+        return json.dumps(updated_data, ensure_ascii=False)

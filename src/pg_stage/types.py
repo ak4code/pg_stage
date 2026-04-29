@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Callable, Dict, List
+from typing import Any, Dict, List
 
 from typing_extensions import TypedDict
 
@@ -37,7 +37,6 @@ class MapTablesValueType(TypedDict):
     """Описание типа значения карты таблиц"""
 
     mutation_name: str
-    mutation_func: Callable[..., str]
     mutation_kwargs: Dict[str, Any]
     mutation_relations: RelationTypeMany
     mutation_conditions: ConditionTypeMany
