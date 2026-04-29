@@ -121,6 +121,38 @@ class Mutator:
             code[i] = a
         return code.decode()
 
+    def get_mutation_func(self, *, mutation_name: str) -> Callable[..., Any]:
+        """
+        Метод для получения callable мутации по имени.
+        :param mutation_name: название мутации (без префикса 'mutation_')
+        :return: callable функция мутации
+        """
+        return shared_get_mutation_func(mutation_owner=self, mutation_name=mutation_name)
+
+    def run_mutation(
+        self,
+        *,
+        mutation_name: str,
+        mutation_kwargs: Optional[dict[str, Any]] = None,
+        current_value: Any = None,
+        obfuscated_values: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        """
+        Метод для выполнения мутации с безопасным merge runtime-контекста.
+        :param mutation_name: название мутации (без префикса 'mutation_')
+        :param mutation_kwargs: параметры мутации, опционально
+        :param current_value: текущее значение поля, опционально
+        :param obfuscated_values: словарь обфусцированных значений для cross-column операций, опционально
+        :return: результат применения мутации
+        """
+        return shared_run_mutation(
+            mutation_owner=self,
+            mutation_name=mutation_name,
+            mutation_kwargs=mutation_kwargs,
+            current_value=current_value,
+            obfuscated_values=obfuscated_values,
+        )
+
     def mutation_email(self, **kwargs: bool) -> str:
         """
         Метод для генерации email-а.
