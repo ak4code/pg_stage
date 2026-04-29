@@ -52,3 +52,6 @@ pytest = "7.3.1"
 bandit = "1.7.5"
 ruff = "0.11.8" 
 mypy = "1.4.1"
+
+[tool.bandit]
+exclude_dirs = ["tests"]
