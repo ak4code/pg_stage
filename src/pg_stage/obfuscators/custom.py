@@ -874,7 +874,7 @@ class DataBlockProcessor:
                 result = processed.encode('utf-8')
             else:
                 result = line_bytes
-        except Exception:
+        except Exception:  # noqa: BLE001
             result = line_bytes
         
         return result + (b'\n' if has_newline else b'')
@@ -996,7 +996,9 @@ class DataBlockProcessor:
             if remaining:
                 if isinstance(remaining, str):
                     remaining = remaining.encode('utf-8')
-                output_batch.extend(remaining)
+
+                # FIXME: пофиксить падения mypy в строке ниже  # noqa: FIX001
+                output_batch.extend(remaining)  # type: ignore[arg-type]
 
         write_batch()
 

@@ -11,7 +11,8 @@ def get_mutation_func(*, mutation_owner: Any, mutation_name: str) -> Callable[..
     """
     mutation_func = getattr(mutation_owner, f'mutation_{mutation_name}', None)
     if not mutation_func:
-        raise ValueError(f'Not found mutation "{mutation_name}"')
+        msg = f'Not found mutation "{mutation_name}"'
+        raise ValueError(msg)
     return mutation_func
 
 
@@ -23,9 +24,11 @@ def extract_mutation_kwargs(*, mutation_config: dict[str, Any]) -> dict[str, Any
     """
     mutation_kwargs = mutation_config.get('mutation_kwargs')
     if mutation_kwargs is None:
-        raise ValueError('mutation_kwargs is required in mutation config')
+        msg = 'mutation_kwargs is required in mutation config'
+        raise ValueError(msg)
     if not isinstance(mutation_kwargs, dict):
-        raise ValueError('mutation_kwargs must be an object (dict)')
+        msg = 'mutation_kwargs must be an object (dict)'
+        raise ValueError(msg)
     return mutation_kwargs
 
 
@@ -111,13 +114,13 @@ def apply_mutations_to_json_value(
     result_value = value
     for key_mutation in key_mutations:
         if not isinstance(key_mutation, dict):
-            raise ValueError(
-                f'Each mutation must be an object (dict), but got {type(key_mutation).__name__}'
-            )
+            msg = f'Each mutation must be an object (dict), but got {type(key_mutation).__name__}'
+            raise ValueError(msg)
 
         mutation_name: str = key_mutation.get('mutation_name', '')
         if not mutation_name:
-            raise ValueError('mutation_name not specified for json key')
+            msg = 'mutation_name not specified for json key'
+            raise ValueError(msg)
 
         if mutation_name == 'delete':
             return True, None

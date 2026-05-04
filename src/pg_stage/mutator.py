@@ -13,7 +13,11 @@ from mimesis.builtins import RussiaSpecProvider
 
 from pg_stage.utils import (
     apply_mutations_to_json_value,
+)
+from pg_stage.utils import (
     get_mutation_func as shared_get_mutation_func,
+)
+from pg_stage.utils import (
     run_mutation as shared_run_mutation,
 )
 
@@ -652,7 +656,7 @@ class Mutator:
 
         return f'{not_obfuscated_digits}{"".join(digits_list)}'
 
-    def mutation_json_update(self, **kwargs: Any) -> str:
+    def mutation_json_update(self, **kwargs: Any) -> str | None:
         """
         Метод для частичного обновления JSON-поля по ключам.
         :param kwargs:
@@ -670,13 +674,14 @@ class Mutator:
         :return: строка с обновлённым JSON
         """
         current_value: Optional[str] = kwargs.get('current_value')
-        if current_value == '\\N':
+        if current_value is None or current_value == '\\N':
             return current_value
 
         try:
             data: dict[str, Any] = json.loads(current_value)
         except (json.JSONDecodeError, ValueError) as error:
-            raise ValueError('Invalid JSON value') from error
+            msg = 'Invalid JSON value'
+            raise ValueError(msg) from error
 
         if not isinstance(data, dict):
             logger.warning('json_update expects a dict object after JSON parsing')
@@ -684,10 +689,12 @@ class Mutator:
 
         mutations_by_key: Any = kwargs.get('mutations_by_key')
         if mutations_by_key is None:
-            raise ValueError('mutations_by_key is required')
+            msg = 'mutations_by_key is required'
+            raise ValueError(msg)
 
         if not isinstance(mutations_by_key, dict):
-            raise ValueError('mutations_by_key must be an object (dict)')
+            msg = 'mutations_by_key must be an object (dict)'
+            raise ValueError(msg)
 
         obfuscated_values = kwargs.get('obfuscated_values')
         seen_keys: set[str] = set()
@@ -703,7 +710,8 @@ class Mutator:
                         continue
 
                     if not isinstance(key_mutations, list):
-                        raise ValueError(f'The value for key "{key}" must be a list of mutators')
+                        msg = f'The value for key "{key}" must be a list of mutators'
+                        raise ValueError(msg)
 
                     seen_keys.add(key)
                     is_deleted, new_value = apply_mutations_to_json_value(
@@ -732,7 +740,8 @@ class Mutator:
                 continue
 
             if not isinstance(key_mutations, list):
-                raise ValueError(f'The value for key "{key}" must be a list of mutators')
+                msg = f'The value for key "{key}" must be a list of mutators'
+                raise ValueError(msg)
 
             is_deleted, new_value = apply_mutations_to_json_value(
                 mutation_owner=self,
