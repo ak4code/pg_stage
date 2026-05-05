@@ -38,9 +38,7 @@ def test_json_update_existing_key_is_replaced(mutator: Mutator) -> None:
     assert result['score'] == 42  # nosec
 
 
-def test_json_update_existing_key_passes_current_value(
-    mutator: Mutator, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_json_update_existing_key_passes_current_value(mutator: Mutator, monkeypatch: pytest.MonkeyPatch) -> None:
     """
     Arrange: JSON с ключом `phone`; подменяем внутреннюю мутацию,
              чтобы она возвращала значение на основе current_value
@@ -50,7 +48,7 @@ def test_json_update_existing_key_passes_current_value(
     original = {'phone': '+70000000000', 'role': 'admin'}
 
     def fake_mutation(*, current_value: str, **kwargs) -> str:
-        return f"masked:{current_value}"
+        return f'masked:{current_value}'
 
     monkeypatch.setattr(
         mutator,

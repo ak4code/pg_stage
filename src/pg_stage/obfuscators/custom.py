@@ -201,39 +201,39 @@ class PgStageParser(DataParser):
         :return: обработанные байты
         """
         self._line_buffer.extend(data)
-        
+
         last_newline = self._line_buffer.rfind(b'\n')
-        
+
         if last_newline == -1:
             return b''
-        
-        complete_data = bytes(self._line_buffer[:last_newline + 1])
-        del self._line_buffer[:last_newline + 1]
-        
+
+        complete_data = bytes(self._line_buffer[: last_newline + 1])
+        del self._line_buffer[: last_newline + 1]
+
         processed_result = bytearray()
         start = 0
-        
+
         while True:
             newline_pos = complete_data.find(b'\n', start)
             if newline_pos == -1:
                 break
-            
+
             line_bytes = complete_data[start:newline_pos]
             start = newline_pos + 1
-            
+
             if not line_bytes:
                 processed_result.extend(b'\n')
                 continue
-            
+
             try:
                 line = line_bytes.decode('utf-8')
             except UnicodeDecodeError:
                 processed_result.extend(line_bytes)
                 processed_result.extend(b'\n')
                 continue
-            
+
             processed_line = self.parser(line=line)
-            
+
             if isinstance(processed_line, str):
                 if processed_line != line:
                     processed_result.extend(processed_line.encode('utf-8'))
@@ -244,9 +244,9 @@ class PgStageParser(DataParser):
             else:
                 processed_result.extend(line_bytes)
                 processed_result.extend(b'\n')
-        
+
         return bytes(processed_result)
-    
+
     def flush(self) -> bytes:
         """
         Обработать оставшиеся данные в буфере.
@@ -254,7 +254,7 @@ class PgStageParser(DataParser):
         """
         if not self._line_buffer:
             return b''
-        
+
         try:
             line = bytes(self._line_buffer).decode('utf-8')
             processed_line = self.parser(line=line)
@@ -264,7 +264,7 @@ class PgStageParser(DataParser):
                 result = bytes(self._line_buffer)
         except UnicodeDecodeError:
             result = bytes(self._line_buffer)
-        
+
         self._line_buffer.clear()
         return result
 
@@ -677,8 +677,8 @@ class StreamingLineBuffer:
         if last_newline == -1:
             return b''
 
-        complete_lines = bytes(self._buffer[:last_newline + 1])
-        del self._buffer[:last_newline + 1]
+        complete_lines = bytes(self._buffer[: last_newline + 1])
+        del self._buffer[: last_newline + 1]
 
         return complete_lines
 
@@ -833,26 +833,26 @@ class DataBlockProcessor:
             with os.fdopen(output_fd, 'wb', buffering=Constants.COMPRESSION_BUFFER_SIZE) as output_file:
                 batch_bytes = bytearray()
                 max_batch_size = Constants.PROCESSING_BUFFER_SIZE
-                
+
                 for line_bytes in input_file:
                     processed = self._process_single_line(line_bytes)
                     if processed:
                         batch_bytes.extend(processed)
-                    
+
                     if len(batch_bytes) >= max_batch_size:
                         output_file.write(batch_bytes)
                         batch_bytes.clear()
-                
+
                 if batch_bytes:
                     output_file.write(batch_bytes)
-                
+
                 if hasattr(self.processor, 'flush'):
                     remaining = self.processor.flush()
                     if remaining:
                         if isinstance(remaining, str):
                             remaining = remaining.encode('utf-8')
                         output_file.write(remaining)
-    
+
     def _process_single_line(self, line_bytes: bytes) -> bytes:
         """
         Обработать одну строку байтов.
@@ -861,11 +861,11 @@ class DataBlockProcessor:
         """
         if not line_bytes:
             return b''
-        
+
         has_newline = line_bytes.endswith(b'\n')
         if has_newline:
             line_bytes = line_bytes[:-1]
-        
+
         try:
             processed = self.processor.parse(line_bytes)
             if isinstance(processed, bytes):
@@ -876,7 +876,7 @@ class DataBlockProcessor:
                 result = line_bytes
         except Exception:  # noqa: BLE001
             result = line_bytes
-        
+
         return result + (b'\n' if has_newline else b'')
 
     def _process_data_chunk(self, data: bytes) -> bytes:
@@ -963,7 +963,7 @@ class DataBlockProcessor:
             while remaining > 0:
                 read_size = min(remaining, Constants.DEFAULT_BUFFER_SIZE)
                 data = input_stream.read(read_size)
-                
+
                 if len(data) != read_size:
                     message = f'Expected {read_size} bytes, got {len(data)}'
                     raise PgDumpError(message)
@@ -973,10 +973,10 @@ class DataBlockProcessor:
                     processed_data = self.processor.parse(complete_lines)
                     if isinstance(processed_data, str):
                         processed_data = processed_data.encode('utf-8')
-                    
+
                     if processed_data:
                         output_batch.extend(processed_data)
-                        
+
                         if len(output_batch) >= max_batch_size:
                             write_batch()
 
@@ -987,7 +987,7 @@ class DataBlockProcessor:
             processed_data = self.processor.parse(remaining_data)
             if isinstance(processed_data, str):
                 processed_data = processed_data.encode('utf-8')
-            
+
             if processed_data:
                 output_batch.extend(processed_data)
 

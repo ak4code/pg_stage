@@ -665,7 +665,7 @@ class Mutator:
                 {
                     "json_key": [
                         {
-                            "mutation_name": "mutation", 
+                            "mutation_name": "mutation",
                             "mutation_kwargs"?: {"value": "x"}
                         },
                     ]

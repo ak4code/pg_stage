@@ -17,4 +17,4 @@ jobs:
         run: poetry install --only dev
 
       - name: Run bandit
-        run: poetry run bandit -r $(pwd)
+        run: poetry run bandit -c pyproject.toml -r $(pwd)
